@@ -81,19 +81,23 @@ fiber_coupling = 0.9 #Fiber coupling efficiency
 fiber_loss=0.18 #Loss in fiber in dB/km
 fiber_dephasing_rate = 0.02 #dephasing rate in the fiber (Hz)
 
-#Free space channel parameter
-W0 = 0.1
-rx_aperture_freespace = 1
-Cn2_freespace = 0#1e-15
-wavelength = 850*10e-9
-c = 299792.458 #speed of light in km/s
-Tatm = 1
+
 
 #Satellite to Ground channel parameters
-txDiv = 10e-6
+txDiv = 5e-6
 sigmaPoint = 0.5e-6
 rx_aperture_sat = 1
 Cn2_sat = 0
+
+#Free space channel parameter
+W0 = 1550*1e-9/(txDiv*np.pi)
+rx_aperture_drone = 0.4
+rx_aperture_ground = 1
+Cn2_drone_to_ground = 10e-16#1e-15
+Cn2_drone_to_drone = 10e-18
+wavelength = 1550*1e-9
+c = 299792.458 #speed of light in km/s
+Tatm = 1
 
 #Quantum operations accessible to the Qonnectors
 qonnector_physical_instructions = [
@@ -262,12 +266,10 @@ class QEurope():
         ### Parameters ###
         Qonnector1: name of the first Qonnector (str)
         Qonnector2: name of the second Qonnector (str)
-        distmid1: distance between Qonnector 1 and middle node (satellite) in km or half distance between the 
-                two Qonnectors
-        distmid2: distance between Qonnector 2 and middle node (satellite) in km or half distance between the 
-                two Qonnectors (drone)
-        tsat1 : atmospheric transmittance between Qonnector 1 and satellite or between the two Qonnectors (drone)
-        tsat2 : atmospheric transmittance between Qonnector 2 and satellite or between the two Qonnectors (drone)
+        distmid1: distance between Qonnector 1 and middle node (satellite) in km or height of the drones (drone)
+        distmid2: distance between Qonnector 2 and middle node (satellite) in km or distance between drones
+        tsat1 : atmospheric transmittance between Qonnector 1 and satellite or between Qonnectors and drones (drone)
+        tsat2 : atmospheric transmittance between Qonnector 2 and satellite or between the two drones (drone)
         linktype: "drone" or "satellite". In the first case it creates a direct free space link between the two 
                 Qonnectors. In the "satellite case", it creates a quantum processor (satellite) in the middle 
                 connected to the two Qonnectors"""
@@ -285,39 +287,167 @@ class QEurope():
         #create channels depending on the link type
         if linktype == "drone":
             
-            qmem1 = QuantumProcessor( "QonnectorMemoryTo{}".format(Qonnector2), num_positions=2 ,
+            #create two drones
+            Drone1 = Qonnector_node("Drone{}".format(Qonnector1), QlientList=[],QlientPorts={},QlientKeys={})
+            network.add_node(Drone1)
+            
+            Drone2 = Qonnector_node("Drone{}".format(Qonnector2), QlientList=[],QlientPorts={},QlientKeys={})
+            network.add_node(Drone2)
+            
+            qmem3 = QuantumProcessor("DroneMemoryTo{}".format(Qonnector1), num_positions=2,
+                                     phys_instructions=qonnector_physical_instructions)
+            Drone1.add_subcomponent(qmem3)
+            qmem4 = QuantumProcessor("DroneMemoryTo{}".format(Drone2.name), num_positions=2,
+                                     phys_instructions=qonnector_physical_instructions)
+            Drone1.add_subcomponent(qmem4)
+            
+            
+            qmem5 = QuantumProcessor("DroneMemoryTo{}".format(Qonnector2), num_positions=2,
+                                     phys_instructions=qonnector_physical_instructions)
+            Drone2.add_subcomponent(qmem5)
+            qmem6 = QuantumProcessor("DroneMemoryTo{}".format(Drone1.name), num_positions=2,
+                                     phys_instructions=qonnector_physical_instructions)
+            Drone2.add_subcomponent(qmem6)
+            
+            #create processor at each Qonnector
+            qmem1 = QuantumProcessor( "QonnectorMemoryTo{}".format(Drone1.name), num_positions=2 ,
                                 phys_instructions=qonnector_physical_instructions)
             Qonn1.add_subcomponent(qmem1)
-            qmem2 = QuantumProcessor( "QonnectorMemoryTo{}".format(Qonnector1), num_positions=2 ,
+            
+            qmem2 = QuantumProcessor( "QonnectorMemoryTo{}".format(Drone2.name), num_positions=2 ,
                                 phys_instructions=qonnector_physical_instructions)
             Qonn2.add_subcomponent(qmem2)
             
-            qchannel1 = QuantumChannel("FreeSpaceChannelto{}".format(Qonnector2),length=distmid1+distmid2, delay=1,
-                                   models={"quantum_loss_model": FreeSpaceLossModel(W0, rx_aperture_freespace,
-                                                                                    Cn2_freespace, wavelength, Tatm)})
+            #connect the drone to their Qonnector
+            qchannel1 = QuantumChannel("DroneChannelto{}".format(Qonnector1), length = distmid1, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_ground,
+                                                                                Cn2_drone_to_ground, wavelength, tsat1)})
             
-            qchannel2 = QuantumChannel("FreeSpaceChannelto{}".format(Qonnector1),length=distmid1+distmid2, delay=1,
-                                   models={"quantum_loss_model": FreeSpaceLossModel(W0, rx_aperture_freespace,
-                                                                                    Cn2_freespace, wavelength,Tatm)})
+            qchannel2 = QuantumChannel("DroneChannelto{}".format(Drone1.name), length = distmid1, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_drone,
+                                                                                Cn2_drone_to_ground, wavelength, tsat1)})
+            
+            
+            Drone1_send, Qonn1_receive = network.add_connection(
+                Drone1, Qonn1, channel_to = qchannel1, label="Drone1ChanTo{}".format(Qonnector1))
+            Qonn1_send, Drone1_receive = network.add_connection(
+                Qonn1, Drone1, channel_to = qchannel2, label="Drone1ChanTo{}".format(Drone1.name))
+            
+            qchannel3 = QuantumChannel("DroneChannelto{}".format(Qonnector2), length = distmid1, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_ground,
+                                                                                Cn2_drone_to_ground, wavelength, tsat1)})
+            
+            qchannel4 = QuantumChannel("DroneChannelto{}".format(Drone2.name), length = distmid1, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_drone,
+                                                                                Cn2_drone_to_ground, wavelength, tsat1)})
+            
+            
+            Drone2_send, Qonn2_receive = network.add_connection(
+                Drone2, Qonn2, channel_to = qchannel3, label="Drone2ChanTo{}".format(Qonnector2))
+            Qonn2_send, Drone2_receive = network.add_connection(
+                Qonn2, Drone2, channel_to = qchannel4, label="Drone2ChanTo{}".format(Drone2.name))
+            
+            
+            #Connect Drones
+            qchannel5 = QuantumChannel("DroneChannelto{}".format(Drone2.name), length = distmid2, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_drone,
+                                                                                Cn2_drone_to_drone, wavelength, tsat2)})
+            qchannel6 = QuantumChannel("DroneChannelto{}".format(Drone1.name), length = distmid2, delay = 1,
+                                      models={"quantum_loss_model":FreeSpaceLossModel(W0, rx_aperture_drone,
+                                                                                Cn2_drone_to_drone, wavelength, tsat2)})
+            
+            Drone1_sendtoDrone, Drone2_receivefromDrone = network.add_connection(
+                Drone1, Drone2, channel_to = qchannel5, label="Drone1ChanTo{}".format(Drone2.name))
+            Drone2_sendtoDrone, Drone1_receivefromDrone  = network.add_connection(
+                Drone2, Drone1, channel_to = qchannel6, label="Drone2ChanTo{}".format(Drone1.name))
+            
+            #Update node properties
+            Qonn1.QlientList.append(Drone1.name)
+            Qonn1.QlientPorts[Drone1.name] = [Qonn1_send,Qonn1_receive]
+            Qonn1.QlientKeys[Drone1.name] = []
+            
+            
+            Qonn2.QlientList.append(Drone2.name)
+            Qonn2.QlientPorts[Drone2.name] = [Qonn2_send,Qonn2_receive]
+            Qonn2.QlientKeys[Drone2.name] = []
+            
+            Drone1.QlientList.append(Qonnector1)
+            Drone1.QlientPorts[Qonnector1]= [Drone1_send,Drone1_receive]
+            Drone1.QlientKeys[Qonnector1] = []
+            
+            Drone1.QlientList.append(Drone2.name)
+            Drone1.QlientPorts[Drone2.name]= [Drone1_sendtoDrone,Drone1_receivefromDrone]
+            Drone1.QlientKeys[Drone2.name] = []
+            
+            Drone2.QlientList.append(Qonnector2)
+            Drone2.QlientPorts[Qonnector2]= [Drone2_send,Drone2_receive]
+            Drone2.QlientKeys[Qonnector2] = []
+            
+            Drone2.QlientList.append(Drone1.name)
+            Drone2.QlientPorts[Drone1.name]= [Drone2_sendtoDrone,Drone2_receivefromDrone]
+            Drone2.QlientKeys[Drone1.name] = []
+            
+            #Connect the ports
+            #Drone1
+            def route_qubits3(msg):
+                target = msg.meta.pop('internal', None)
+
+                if isinstance(target, QuantumMemory):
+                    if not target.has_supercomponent(Drone1):
+                        raise ValueError("Can't internally route to a quantummemory that is not a subcomponent.")
+                    target.ports['qin'].tx_input(msg)
+                else:
+                    Drone1.ports[Drone1_send].tx_output(msg)
+            
         
+            qmem3.ports['qout'].bind_output_handler(route_qubits3) 
+            
+            def route_qubits4(msg):
+                target = msg.meta.pop('internal', None)
+
+                if isinstance(target, QuantumMemory):
+                    if not target.has_supercomponent(Drone1):
+                        raise ValueError("Can't internally route to a quantummemory that is not a subcomponent.")
+                    target.ports['qin'].tx_input(msg)
+                else:
+                    Drone1.ports[Drone1_sendtoDrone].tx_output(msg)
+            
         
-            #connect the channels to nodes
-            Qonn1_send, Qonn2_receive = network.add_connection(
-                    Qonn1, Qonn2, channel_to=qchannel1, label="FreeSpaceTo{}".format(Qonnector2))
-            Qonn2_send, Qonn1_receive = network.add_connection(
-                    Qonn2, Qonn1, channel_to=qchannel2, label="FreeSpaceTo{}".format(Qonnector1))
+            qmem4.ports['qout'].bind_output_handler(route_qubits4) 
+            Drone1.ports[Drone1_receive].forward_input(qmem3.ports["qin"]) 
+            Drone1.ports[Drone1_receivefromDrone].forward_input(qmem4.ports["qin"]) 
+            
+            #Drone2
+            def route_qubits5(msg):
+                target = msg.meta.pop('internal', None)
+
+                if isinstance(target, QuantumMemory):
+                    if not target.has_supercomponent(Drone2):
+                        raise ValueError("Can't internally route to a quantummemory that is not a subcomponent.")
+                    target.ports['qin'].tx_input(msg)
+                else:
+                    Drone2.ports[Drone2_send].tx_output(msg)
+            
         
-            #update both qonnectors properties
-            Qonn1.QlientList.append(Qonnector2)
-            Qonn1.QlientPorts[Qonnector2] = [Qonn1_send,Qonn1_receive]
-            Qonn1.QlientKeys[Qonnector2] = []
+            qmem5.ports['qout'].bind_output_handler(route_qubits5) 
+            
+            def route_qubits6(msg):
+                target = msg.meta.pop('internal', None)
+
+                if isinstance(target, QuantumMemory):
+                    if not target.has_supercomponent(Drone2):
+                        raise ValueError("Can't internally route to a quantummemory that is not a subcomponent.")
+                    target.ports['qin'].tx_input(msg)
+                else:
+                    Drone2.ports[Drone2_sendtoDrone].tx_output(msg)
+            
         
-            Qonn2.QlientList.append(Qonnector1)
-            Qonn2.QlientPorts[Qonnector1] = [Qonn2_send,Qonn2_receive]
-            Qonn2.QlientKeys[Qonnector1] = []
-        
-            # Connect the Qonnector's ports
-            def route_qubits1(msg):
+            qmem6.ports['qout'].bind_output_handler(route_qubits6) 
+            Drone2.ports[Drone2_receive].forward_input(qmem5.ports["qin"]) 
+            Drone2.ports[Drone2_receivefromDrone].forward_input(qmem6.ports["qin"]) 
+            
+            #Qonnectors
+            def route_qubits7(msg):
                 target = msg.meta.pop('internal', None)
 
                 if isinstance(target, QuantumMemory):
@@ -328,10 +458,10 @@ class QEurope():
                     Qonn1.ports[Qonn1_send].tx_output(msg)
             
         
-            qmem1.ports['qout'].bind_output_handler(route_qubits1) 
-            Qonn1.ports[Qonn1_receive].forward_input(qmem1.ports["qin"]) 
-        
-            def route_qubits2(msg):
+            qmem1.ports['qout'].bind_output_handler(route_qubits7) 
+            Qonn1.ports[Qonn1_receive].forward_input(qmem1.ports["qin"])   
+            
+            def route_qubits8(msg):
                 target = msg.meta.pop('internal', None)
 
                 if isinstance(target, QuantumMemory):
@@ -342,19 +472,39 @@ class QEurope():
                     Qonn2.ports[Qonn2_send].tx_output(msg)
             
         
-            qmem2.ports['qout'].bind_output_handler(route_qubits2) 
-            Qonn2.ports[Qonn2_receive].forward_input(qmem2.ports["qin"]) 
-        
+            qmem2.ports['qout'].bind_output_handler(route_qubits8) 
+            Qonn2.ports[Qonn2_receive].forward_input(qmem2.ports["qin"])
+
             #Classical channels on top of that
-            cchannel1 = ClassicalChannel("ClassicalChannelto{}".format(Qonnector2),length=distance, delay=1)
-            cchannel2 = ClassicalChannel("ClassicalChannelto{}".format(Qonnector1),length=distance, delay=1)
+            cchannel1 = ClassicalChannel("ClassicalChannelto{}".format(Qonnector1),length=distmid1, delay=1)
+            cchannel2 = ClassicalChannel("ClassicalChanneltoDrone1",length=distmid1, delay=1)
         
-            network.add_connection(Qonn1, Qonn2, channel_to=cchannel1, 
-                               label="Classicalto{}".format(Qonnector2), port_name_node1="cout_{}".format(Qonnector2),
-                               port_name_node2="cin_{}".format(Qonnector1))
-            network.add_connection(Qonn2, Qonn1, channel_to=cchannel2, 
+            network.add_connection(Drone1, Qonn1, channel_to=cchannel1, 
                                label="Classicalto{}".format(Qonnector1), port_name_node1="cout_{}".format(Qonnector1),
+                               port_name_node2="cin_{}".format(Drone1.name))
+            network.add_connection(Qonn1, Drone1, channel_to=cchannel2, 
+                               label="ClassicaltoDrone1", port_name_node1="cout_{}".format(Drone1.name),
+                               port_name_node2="cin_{}".format(Qonnector1))
+            
+            cchannel3 = ClassicalChannel("ClassicalChannelto{}".format(Qonnector2),length=distmid1, delay=1)
+            cchannel4 = ClassicalChannel("ClassicalChanneltoDrone2",length=distmid1, delay=1)
+        
+            network.add_connection(Drone2, Qonn2, channel_to=cchannel3, 
+                               label="Classicalto{}".format(Qonnector2), port_name_node1="cout_{}".format(Qonnector2),
+                               port_name_node2="cin_{}".format(Drone2.name))
+            network.add_connection(Qonn2, Drone2, channel_to=cchannel4, 
+                               label="ClassicaltoDrone2", port_name_node1="cout_{}".format(Drone2.name),
                                port_name_node2="cin_{}".format(Qonnector2))
+            
+            cchannel5 = ClassicalChannel("ClassicalChanneltoDrone1",length=distmid1, delay=1)
+            cchannel6 = ClassicalChannel("ClassicalChanneltoDrone2",length=distmid1, delay=1)
+        
+            network.add_connection(Drone1, Drone2, channel_to=cchannel5, 
+                               label="Classicalto{}".format(Drone2.name), port_name_node1="cout_{}".format(Drone2.name),
+                               port_name_node2="cin_{}".format(Drone1.name))
+            network.add_connection(Drone2, Drone1, channel_to=cchannel6, 
+                               label="Classicalto{}".format(Drone1.name), port_name_node1="cout_{}".format(Drone1.name),
+                               port_name_node2="cin_{}".format(Drone2.name))
             
         if linktype == "satellite":
             
@@ -524,9 +674,13 @@ class ReceiveProtocol(NodeProtocol):
             self._measurement_flip = measurement_flip
 
     def run(self):
-            if self.node.name[0:9] == 'Qonnector':
-                mem = self.node.subcomponents["QonnectorMemoryTo{}".format(self._othernode.name)]
-                port = self.node.ports[self.node.QlientPorts[self._othernode.name][1]]
+            if self.node.name[0:9] == 'Qonnector' or self.node.name[0:5]=='Drone':
+                if self.node.name[0:9] == 'Qonnector':
+                    mem = self.node.subcomponents["QonnectorMemoryTo{}".format(self._othernode.name)]
+                    port = self.node.ports[self.node.QlientPorts[self._othernode.name][1]]
+                elif self.node.name[0:5]=='Drone':
+                    mem = self.node.subcomponents["DroneMemoryTo{}".format(self._othernode.name)]
+                    port = self.node.ports[self.node.QlientPorts[self._othernode.name][1]]
                 #print(port)
                 while True:
                     yield self.await_port_input(port)
@@ -733,10 +887,12 @@ class SendBB84(NodeProtocol):
         self._init_flip = init_flip
     
     def run(self):
-        if self.node.name[0:9] == 'Qonnector' or self.node.name[0:9]== 'Satellite':
+        if self.node.name[0:9] == 'Qonnector' or self.node.name[0:9]== 'Satellite' or self.node.name[0:5]=='Drone':
             
             if self.node.name[0:9]== 'Satellite':
                 mem = self.node.subcomponents["SatelliteMemoryTo{}".format(self._othernode.name)]
+            elif self.node.name[0:5]=='Drone':
+                mem = self.node.subcomponents["DroneMemoryTo{}".format(self._othernode.name)]
             else:
                 mem = self.node.subcomponents["QonnectorMemoryTo{}".format(self._othernode.name)]
         
@@ -1394,4 +1550,3 @@ def estimQBERGHZ5(L):
     else:
         return 0
     
-
